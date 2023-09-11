@@ -303,6 +303,9 @@ def main():
                     metavar = "a string for reference accession", help = "a reference id")
     parser.add_argument("-r", "--readFa", type = str, nargs = 1,
                     metavar = "a fasta file for all input reads with readname_sample information in header", help = "a fasta file for all input reads with readname_sample information in header")
+    
+    parser.add_argument("-t", "--ReadcountThreshold", type = int, nargs = 1,
+                    metavar = "an integer, edges with less than t reads supported are purged, unless its on reference assemblies")
     parser.add_argument("-o", "--Output", type = str, nargs = 1,
                     metavar = "output filename", help = "output gfa filename")
     
@@ -312,6 +315,7 @@ def main():
     ref_name = args.referencename[0]
     read_fa = args.readFa[0]
     outputgfa = args.Output[0]
+    threshold = args.ReadcountThreshold[0]
     
     g = GraphicalGenome()
     
@@ -333,7 +337,7 @@ def main():
     sequences.append(ref_contig[1:])
 
     Edge_info, Outgoing = g.create_edgefile(headers, sequences, Final_anchor, k)
-    g.filter_undersupported_edges(Edge_info, ref_name)
+    g.filter_undersupported_edges(Edge_info, ref_name, threshold)
     g.write_gfa(Final_anchor, Edge_info, outputgfa)
     
    
