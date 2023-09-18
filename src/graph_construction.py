@@ -33,6 +33,8 @@ class GraphicalGenome:
             unitig = data['unitig_sequence']
             for i in range(len(unitig)- k + 1):
                 n = unitig[i:i+k]
+                if "N" in n:
+                    continue
                 try:
                     colors = g.nodes[pyfrost.Kmer(n)]['colors'] 
                     if len(set(colors)) == colorsnum:
@@ -173,7 +175,7 @@ class GraphicalGenome:
             edge_seq = contig[src_pos+k:dst_pos] # fix bug 08/23/2023
 
         if pr and sr:
-            edge_seq = ''.join([{'A':'T','C':'G','G':'C','T':'A'}[base] for base in reversed(edge_seq)])
+            edge_seq = ''.join([{'A':'T','C':'G','G':'C','T':'A', 'N':'N'}[base] for base in reversed(edge_seq)])
             node = src
             src = dst
             dst = node
