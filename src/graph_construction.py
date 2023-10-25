@@ -26,23 +26,26 @@ class GraphicalGenome:
         return contig
         
         
-    def revised_find_shared_kmers(self, g, k, colorsnum):
+    def find_shared_kmers(self, g, k, colorsnum):
         anchorlist = []
         no_colors = 0
         for n, data in g.nodes(data=True):
             unitig = data['unitig_sequence']
-            for i in range(len(unitig)- k + 1):
-                n = unitig[i:i+k]
-                if "N" in n:
-                    continue
-                try:
-                    colors = g.nodes[pyfrost.Kmer(n)]['colors'] 
-                    if len(set(colors)) == colorsnum:
-                        anchorlist.append(n)
-                        break
-                except:
-                    no_colors += 1
+            if "N" in n:
+                continue
+            try:
+                #colors = data["colors"] # union of all kmers
+                D = defaultdict(set)
+                for position, color in data["colors"].pos_color_iter():
+                    D[position].add(color)
 
+                for pos, colorset in D.items():
+                    if len(colorset) >= colorsnum:
+                        kmer = unitig[pos:pos + k]
+                        anchorlist.append(kmer)                
+            except:         
+                no_colors += 1
+                continue
         return anchorlist, no_colors
 
     def map_to_genome(self, contig, anchorlist, k):
