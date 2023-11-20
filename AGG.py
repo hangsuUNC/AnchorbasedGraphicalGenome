@@ -1,5 +1,6 @@
 import gzip
 import json
+import numpy
 
 class GraphicalGenome:
     def __init__(self, filename):
@@ -182,3 +183,247 @@ def find_most_supported_path(graph, sample, ref = '012920.1'):
             print(item)
 
     return reconstruct, Path
+
+
+class Find_all_Path_between_anchors:
+    def __init__(self, graph, start, end, read_sets):
+        self.subpath = []
+        self.initial_set = read_sets
+        self.find_path(graph, start, end, [], 0, self.initial_set)
+        
+    def find_path(self, g, start, end, sofar, depth, readset):
+        
+        if start == end:
+            sofar1 = sofar + [end]
+            if len(readset)>0:
+                self.subpath.append((sofar1, readset))
+            return
+        
+        # path not supported
+        if len(readset) <1:
+            return  
+        
+        # path not circular
+        if start == "SINK":
+            return
+        
+        depth1 = depth+ 1
+        
+        
+        for dst in g.outgoing[start]:   
+            # consider the read set in the latest 10 intervals
+            if dst.startswith("E"):
+                readset1 = readset & set(g.edges[dst]['reads'])
+            else:
+                readset1 = readset
+            
+            self.find_path(g, dst, end, sofar = sofar + [start], depth = depth1, readset = readset1)
+            
+def reconstruct_path_seq(graph, path):
+    seq = ""
+    for item in path:
+        if item.startswith('A'):
+            seq += graph.anchor[item]['seq']
+        elif item.startswith("E"):
+            seq += graph.edges[item]['seq']
+        else:
+            item += ""
+    return seq
+
+def find_furthest_node(node_candidate, subgraph):
+    max_distance = 0
+    node = ""
+    for n in node_candidate:
+        d = numpy.absolute(subgraph.anchor[node]['pos'] - subgraph.anchor['start_node']['pos'])
+        if d > max_distance:
+            node = n
+    return node
+
+class Get_Series_Parallel_Graph:
+    
+    def __init__(self, graph):
+        self.initial_set = self.find_all_reads(graph)
+        self.nodelist = self.series_parallel_graph_nodelist(graph)
+        #print(self.nodelist)
+        self.anchor, self.edges, self.outgoing, self.incoming = self.series_parallel_graph(self.nodelist, graph)
+
+    def find_all_reads(self, graph):
+        read_sets = set()
+        edgelist = graph.edges.keys()
+        for item in edgelist:
+            readlist = graph.edges[item]['reads']
+            for read in readlist:
+                read_sets.add(read)
+        return read_sets
+    def find_furthest_node(self, node_candidate, subgraph, start_node):
+        max_distance = 0
+        node = ""
+        for n in node_candidate:
+            d = numpy.absolute(subgraph.anchor[n]['pos'] - subgraph.anchor[start_node]['pos'])
+            if d > max_distance:
+                node = n
+        return node
+
+    def series_parallel_graph_nodelist(self, subgraph): 
+        #  need to consider the loop i.e.the last anchor to the first anchor
+
+        start_node = sorted(subgraph.anchor.keys())[0]
+        Nodelist = [start_node]
+
+        edgelist = subgraph.outgoing[start_node]
+        node_candidate = []
+        for edge in edgelist:
+            nodelist = subgraph.outgoing[edge]
+            node_candidate += nodelist
+            if nodelist[0] not in subgraph.anchor:
+                    continue
+        node_candidate = sorted(node_candidate)
+        #node = node_candidate[-1] ## node should be selected by the largest distance instead of the sorting order
+        node = self.find_furthest_node(node_candidate, subgraph, start_node)
+
+        # find the furthurest anchor
+        Nodelist.append(node) # append the furthest node
+        
+
+
+        while node != start_node:
+            # print(node)
+
+            edgelist = subgraph.outgoing[node]
+            node_candidate = []
+            for edge in edgelist:
+                nodelist = subgraph.outgoing[edge]
+                # exclude deadend
+                if "SINK" in nodelist:
+                    continue
+                if nodelist[0] not in subgraph.anchor:
+                    continue
+                if nodelist[0] not in subgraph.outgoing:
+                    continue
+                node_candidate += nodelist
+
+            node_candidate = sorted(node_candidate)
+            node = self.find_furthest_node(node_candidate, subgraph, node)
+            if node in set(Nodelist):
+                Nodelist.append(node)
+                break
+            Nodelist.append(node) # append the furthest node  
+                
+        return Nodelist
+    
+    def series_parallel_graph(self, Nodelist, subgraph):
+        Node_dict = {}
+        Edge_dict = {}
+        Outgoing_dict = {}
+        Incoming_dict = {}
+        for i, node in enumerate(Nodelist[:-1]):
+            start_node = node
+            end_node = Nodelist[i+1]
+            Node_dict[start_node] = subgraph.anchor[start_node]
+            # print(start_node, end_node)
+            path = Find_all_Path_between_anchors(subgraph, start_node, end_node, self.initial_set)
+            #print(start_node,end_node, len(path.subpath))
+            index = 0
+            for p, rs in path.subpath:
+                edgename = 'E%05d.%04d' % (int(start_node[1:]), index)
+                seq = reconstruct_path_seq(subgraph, p[1:-1])
+                Edge_dict[edgename] = {}
+                Edge_dict[edgename]['seq'] = seq
+                Edge_dict[edgename]['src'] = start_node
+                Edge_dict[edgename]['dst'] = end_node
+                Edge_dict[edgename]['reads'] = list(rs)
+                Edge_dict[edgename]['strain'] = list(set([item.split("_")[-1] for item in list(rs)]))
+
+                Outgoing_dict[start_node] = Outgoing_dict.get(start_node, []) + [edgename]
+                Outgoing_dict[edgename] = [end_node]
+
+                Incoming_dict[end_node] = Incoming_dict.get(end_node, []) + [edgename]
+                Incoming_dict[edgename] = [start_node]
+                index += 1
+        return Node_dict, Edge_dict, Outgoing_dict, Incoming_dict
+    
+
+class SubGraph:
+    def __init__(self, graph, samplelist):
+        self.anchor, self.edges, self.outgoing, self.incoming = self.reconstruct_sample_subgraph(graph, samplelist)
+
+    def reconstruct_sample_subgraph(self, graph, samplelist):
+        Anchor_dict = {}
+        Edge_dict = {}
+        Outgoing = {}
+        Incoming = {}
+
+        edgelist = list(graph.edges.keys())
+        nodelist = []
+        
+        for edge in edgelist:
+            if len(set(samplelist) & set(graph.edges[edge]['strain'])) > 0:
+                Edge_dict[edge] = graph.edges[edge]
+                src = graph.incoming[edge][0]
+                dst = graph.outgoing[edge][0]
+                
+                Edge_dict[edge]['src'] = src
+                Edge_dict[edge]['dst'] = dst
+                
+                Incoming[edge] = graph.incoming[edge]
+                Incoming[dst] = Incoming.get(dst, []) + [edge]
+                
+                Outgoing[edge] = graph.outgoing[edge]
+                Outgoing[src] = Outgoing.get(src, []) + [edge]
+                
+                nodelist += graph.incoming[edge]
+                nodelist += graph.outgoing[edge]
+
+        nodelist = list(set(nodelist))
+        for node in nodelist:
+            if node.startswith("A"):
+                Anchor_dict[node] = graph.anchor[node]      
+        return Anchor_dict, Edge_dict, Outgoing, Incoming
+    
+def validate_sp_graph(series_parallelgraph):
+    nodelist = series_parallelgraph.anchor.keys()
+    for node in nodelist:
+        edgelist = series_parallelgraph.outgoing[node]
+        outgoing_nodelist = []
+        for edge in edgelist:
+            outgoing_nodelist.append(series_parallelgraph.edges[edge]['dst'])
+            outgoing_nodelist.append(series_parallelgraph.outgoing[edge][0])
+        outgoing_nodelist = set(outgoing_nodelist)
+        assert len(outgoing_nodelist) == 1
+    print("PASS")
+
+def processCigar(cigar):
+    """Helper Function, may not be used directly, expand Cigar string
+    
+    Parameters:
+        cigar: <str> - compressed cigar
+    """
+    out = ''
+    N = 0
+    for symbol in cigar:
+        if symbol in '0123456789':
+            N = 10*N + int(symbol)
+        else:
+            #if (symbol != 'D'):
+            if (N == 0):
+                out += symbol
+            else:
+                out += N*symbol
+            N = 0
+    return out
+
+def combineCigar(cigar):
+    """Helper Function, may not be used directly, compress Cigar string
+    
+    Parameters:
+        cigar: <str> - expanded cigar
+    """
+    cigar = cigar +'$'
+    out = ''
+    N = 0
+    start = 0
+    for i in range(1,len(cigar)):
+        if cigar[i-1] != cigar[i]:
+            out += str(i-start) + cigar[i-1]
+            start = i
+    return out  
