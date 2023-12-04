@@ -132,22 +132,25 @@ def reconstruct_sample_subgraph(graph, samplelist, outputfile):
 
     return Anchor_dict, Edge_dict
 
-def find_most_supported_path(graph, sample, ref = '012920.1'):
-    src = "SOURCE"
+def find_most_supported_path(graph, sample, ref = '012920'):
+    src = sorted(graph.anchor.keys())[0]
+    dst = sorted(graph.anchor.keys())[-1]
     Path = []
 
     visited = set()
-
-    while src != "SINK":
-        edgelist = graph.outgoing[src]
+    
+    def find_most_supported_edge(graph, sample, src, ref):
+        
+        edgelist = graph.outgoing.get(src, [])
         sample_edge = []
         for edge in edgelist:
-            if sample in set(graph.edges[edge]['strain']):
+            if sample in graph.edges[edge]['strain']:
                 sample_edge += [edge]
         if len(sample_edge)<1: # no haplotype for this sample at this place the go to the reference one
-            for edge in edgelist:
-                if ref in set(graph.edges[edge]['strain']):
+            for ref_edge in edgelist:
+                if ref in set(graph.edges[ref_edge]['strain']):
                     break
+            edge = ref_edge
 
         elif len(sample_edge) == 1:
             edge = sample_edge[0]
@@ -158,8 +161,11 @@ def find_most_supported_path(graph, sample, ref = '012920.1'):
             index = numpy.argmax(read_count)
 
             edge = sample_edge[index]
-
-
+            
+        return edge
+            
+    while src != dst:
+        edge = find_most_supported_edge(graph, sample, src, ref)
         Path += [src, edge]
 
         visited.add(src)
@@ -170,7 +176,14 @@ def find_most_supported_path(graph, sample, ref = '012920.1'):
 
         if src in visited:
             break
-
+    
+    if src == dst:
+        try:
+            edge = find_most_supported_edge(graph, sample, src, ref)
+            Path += [src, edge]
+        except:
+            Path = Path
+        
     reconstruct = ''
     for item in Path:
         if item == "SOURCE":
@@ -427,3 +440,186 @@ def combineCigar(cigar):
             out += str(i-start) + cigar[i-1]
             start = i
     return out  
+
+def get_variant_position(cigar):
+    ref_pos = []
+    alt_pos = []
+    var_type = []
+    alt_i = 0
+    ref_i = 0
+    for i, s in enumerate(cigar):
+        if s == 'I':
+            if ref_i > 0:
+                ref_pos.append(ref_i-1)
+            else:
+                ref_pos.append(ref_i)    
+            alt_pos.append(alt_i)
+            var_type.append("I")
+            
+            alt_i += 1
+            
+        if s == 'D':
+            ref_pos.append(ref_i)
+            if alt_i > 0:
+                alt_pos.append(alt_i-1)
+            else:
+                alt_pos.append(alt_i)
+            var_type.append("D")
+            ref_i += 1
+            
+        if s == 'X':
+            ref_pos.append(ref_i)
+            alt_pos.append(alt_i)
+            alt_i += 1
+            ref_i += 1
+            var_type.append("X")
+            
+        if s == '=':
+            alt_i += 1
+            ref_i += 1
+
+    return ref_pos, alt_pos, var_type
+
+def findBedge(Graph, src, dst, refstrain, k):
+    paths = AGG.Find_all_Path_between_anchors(Graph, src, dst, {refstrain})
+    subpaths = paths.subpath
+
+    if len(subpaths) < 1:
+        return ""
+    for p, strain in subpaths:
+        seq = AGG.reconstruct_path_seq(spgraph, path = p)
+    return seq[k:-k]
+
+def find_all_reads(graph):
+    read_sets = set()
+    edgelist = graph.edges.keys()
+    for item in edgelist:
+        readlist = graph.edges[item]['reads']
+        for read in readlist:
+            read_sets.add(read)
+    return read_sets
+
+def get_snps(subgraph, mpath, k, ref):
+    SNPs = {} # Var[refpos]['edgename'] = ['A']
+    for edge in mpath:
+        if edge.startswith('E'):
+            cigar = subgraph.edges[edge].get('variants', "")
+            if cigar == "":
+                continue
+            src = subgraph.incoming[edge][0]
+            if src != "SOURCE":
+                refstart = int(subgraph.anchor[src]["pos"]) + k
+            else:
+                raise "SOURCE or SINK node"
+
+            # find reference seq
+            dst = subgraph.outgoing[edge][0]
+            ref_edge_list, ref_seq = findBedge(spgraph, src, dst, "NC_012920", k)
+            ref_edge = ref_edge_list[0]
+            expanded_cigar = AGG.processCigar(cigar)
+            refpos, altpos, var_type = get_variant_position(AGG.processCigar(cigar))
+            alt_seq = subgraph.edges[edge]['seq']
+            # only record SNPs
+            for i, vart in enumerate(var_type):
+                if vart == "X":
+                    rp = refpos[i]
+                    ap = altpos[i]
+                    pos = refstart + rp
+                    SNPs[pos] = SNPs.get(pos, {})
+                    SNPs[pos][edge] = SNPs[pos].get(edge, {})                
+                    SNPs[pos][edge]['base'] = SNPs[pos][edge].get('base', "") + alt_seq[ap]
+                    SNPs[pos][edge]['altoffset'] = SNPs[pos][edge].get('altoffset', []) + [ap]
+                    SNPs[pos][ref_edge] = SNPs[pos].get(ref_edge, {})
+                    SNPs[pos][ref_edge]['base'] = ref_seq[refpos[i]]
+                    SNPs[pos]['refbase'] = SNPs[pos][ref_edge]['base']
+    return SNPs
+
+def get_indels(subgraph, mpath, k, ref):
+    Indels = {} # Var[refpos]['edgename'] = ['A']
+    for edge in mpath:
+        if edge.startswith('E'):
+            cigar = subgraph.edges[edge].get('variants', "")
+            if cigar == "":
+                continue
+            src = subgraph.incoming[edge][0]
+            if src != "SOURCE":
+                refstart = int(subgraph.anchor[src]["pos"]) + k
+            else:
+                raise "SOURCE or SINK node"
+
+            # find reference seq
+            dst = subgraph.outgoing[edge][0]
+            ref_edge_list, ref_seq = findBedge(spgraph, src, dst, "NC_012920", k)
+            ref_edge = ref_edge_list[0]
+            expanded_cigar = AGG.processCigar(cigar)
+            refpos, altpos, var_type = get_variant_position(AGG.processCigar(cigar))
+            alt_seq = subgraph.edges[edge]['seq']
+            # only record SNPs
+            for i, vart in enumerate(var_type):
+                if vart == "I":
+                    rp = refpos[i]
+                    ap = altpos[i]
+                    pos = refstart + rp
+                    Indels[pos] = Indels.get(pos, {})
+                    Indels[pos][edge] = Indels[pos].get(edge, {})                
+                    Indels[pos][edge]['base'] = Indels[pos][edge].get('base', "") + alt_seq[ap:ap+2]
+                    Indels[pos][edge]['info'] = "INS"
+                    Indels[pos][edge]['altoffset'] = Indels[pos][edge].get('altoffset', []) + [ap]
+                    Indels[pos][ref_edge] = Indels[pos].get(ref_edge, {})
+                    Indels[pos][ref_edge]['base'] = Indels[pos][ref_edge].get("base", "") + ref_seq[rp-1]
+                    Indels[pos]['refbase'] = Indels[pos][ref_edge]['base']
+
+                if vart == "D":
+                    rp = refpos[i]
+                    ap = altpos[i]
+                    pos = refstart + rp
+                    Indels[pos] = Indels.get(pos, {})
+                    Indels[pos][edge] = Indels[pos].get(edge, {})                
+                    Indels[pos][edge]['base'] = Indels[pos][edge].get('base', "") + alt_seq[ap]
+                    Indels[pos][edge]['info'] = "DEL"
+                    Indels[pos][edge]['altoffset'] = Indels[pos][edge].get('altoffset', []) + [ap-1]
+                    Indels[pos][ref_edge] = Indels[pos].get(ref_edge, {})
+                    Indels[pos][ref_edge]['base'] = Indels[pos][ref_edge].get("base", "") + ref_seq[rp-1:rp+1]
+                    Indels[pos]['refbase'] = Indels[pos][ref_edge]['base']
+    return Indels
+
+
+def get_VCF_file(Var, samplelist):
+    Mat = {}
+
+    for pos, D in Var.items():
+        Mat[pos] = {}
+        for edge, B in D.items():
+            if edge == "refbase":
+                continue
+            for strain in samplelist:
+                Mat[pos][strain] = Mat[pos].get(strain, set()) | set([B['base']])
+    #print(Mat)
+    # write VCF
+    VCF = {}
+    for pos, D in Mat.items():
+        refbase = Var[pos]['refbase']
+        if list(D.values())[0] == set([refbase]):
+            continue    
+        VCF[pos]= VCF.get(pos, {})
+        for strain, base in D.items():
+            VCF[pos]["CHROM"] = "chrM"
+            VCF[pos]["POS"] = pos
+            VCF[pos]['ID'] = "."
+            VCF[pos]['REF'] = refbase
+            #print(base - set([refbase]))
+            VCF[pos]['ALT'] = ",".join(base - set([refbase]))
+            VCF[pos]['QUAL'] = "."
+            VCF[pos]['FILTER'] = "."
+            VCF[pos]['INFO'] = "."
+            VCF[pos]['FORMAT'] = "GT"
+            #print(base)
+            # allelelist = []
+            # if refbase in base:
+            #     allelelist += [0]
+
+            # for i,s in enumerate(base - set([refbase])):
+            #     allelelist += [i+1]
+            # VCF[pos][strain] = "/".join([str(item) for item in allelelist])
+            VCF[pos][strain] = "/".join([str(item) for item in base])
+    return VCF
